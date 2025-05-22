@@ -1344,6 +1344,9 @@ class Filesystem:
     def mount(self):
         return self._mount
 
+    def get_fstype(self) -> str:
+        return self.fstype
+
     def _available(self):
         # False if mounted or if fs does not require a mount, True otherwise.
         if self._mount is None:
@@ -1361,10 +1364,6 @@ class Mount:
     device: Filesystem = attributes.ref(backlink="_mount", default=None)
     options: Optional[str] = None
     spec: Optional[str] = None
-
-    @property
-    def fstype(self):
-        return self.device.fstype
 
     def can_delete(self):
         from subiquity.common.filesystem import boot
@@ -1455,14 +1454,14 @@ class ZPool:
 
 @fsobj("zfs")
 class ZFS:
+    fstype: str = "zfs"
     pool: ZPool = attributes.ref(backlink="_zfses")
     volume: str
     # options to pass to zfs dataset creation
     properties: Optional[dict] = None
 
-    @property
-    def fstype(self):
-        return "zfs"
+    def get_fstype(self):
+        return self.fstype
 
     @property
     def canmount(self):
@@ -2443,7 +2442,7 @@ class FilesystemModel:
     def should_add_swapfile(self):
         mount = self._mount_for_path("/")
         if mount is not None:
-            if not can_use_swapfile("/", mount.fstype):
+            if not can_use_swapfile("/", self._fs.fstype):
                 return False
         for swap in self._all(type="format", fstype="swap"):
             if swap.mount():
