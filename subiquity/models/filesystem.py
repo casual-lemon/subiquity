@@ -2368,7 +2368,7 @@ class FilesystemModel:
         options = None
         if fs.volume.on_remote_storage():
             options = "defaults,_netdev"
-        m = Mount(m=self, device=fs, path=path, options=options)
+        m = Mount(m=self, device=fs, fstype=fs, path=path, options=options)
         self._actions.append(m)
         return m
 
