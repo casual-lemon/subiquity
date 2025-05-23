@@ -1331,7 +1331,7 @@ class ArbitraryDevice(_Device):
 
 @fsobj("format")
 class Filesystem:
-    fstype: str
+    fstype: str = None
     volume: _Formattable = attributes.ref(backlink="_fs")
 
     label: Optional[str] = None
@@ -1362,6 +1362,7 @@ class Filesystem:
 class Mount:
     path: str
     device: Filesystem = attributes.ref(backlink="_mount", default=None)
+    fstype: Filesystem = attributes.ref(backlink="_fs")
     options: Optional[str] = None
     spec: Optional[str] = None
 
@@ -1454,14 +1455,10 @@ class ZPool:
 
 @fsobj("zfs")
 class ZFS:
-    fstype: str = "zfs"
     pool: ZPool = attributes.ref(backlink="_zfses")
     volume: str
     # options to pass to zfs dataset creation
     properties: Optional[dict] = None
-
-    def get_fstype(self):
-        return self.fstype
 
     @property
     def canmount(self):
@@ -2442,7 +2439,9 @@ class FilesystemModel:
     def should_add_swapfile(self):
         mount = self._mount_for_path("/")
         if mount is not None:
-            if not can_use_swapfile("/", self.fstype):
+            if not can_use_swapfile("/", self._fs.fstype):
+                print(fstype)
+                print(self._fs.fstype)
                 return False
         for swap in self._all(type="format", fstype="swap"):
             if swap.mount():
