@@ -1344,9 +1344,6 @@ class Filesystem:
     def mount(self):
         return self._mount
 
-    # def get_fstype(self) -> str:
-    #     return self.fstype
-
     def _available(self):
         # False if mounted or if fs does not require a mount, True otherwise.
         if self._mount is None:
@@ -1362,7 +1359,7 @@ class Filesystem:
 class Mount:
     path: str
     device: Filesystem = attributes.ref(backlink="_mount", default=None)
-    fstype: Filesystem = attributes.ref(backlink="_fs")
+
     options: Optional[str] = None
     spec: Optional[str] = None
 
@@ -1459,6 +1456,10 @@ class ZFS:
     volume: str
     # options to pass to zfs dataset creation
     properties: Optional[dict] = None
+
+    @property
+    def fstype(self):
+        return "zfs"
 
     @property
     def canmount(self):
@@ -2369,7 +2370,7 @@ class FilesystemModel:
         options = None
         if fs.volume.on_remote_storage():
             options = "defaults,_netdev"
-        m = Mount(m=self, device=fs, fstype=fs, path=path, options=options)
+        m = Mount(m=self, device=fs, path=path, options=options)
         self._actions.append(m)
         return m
 
