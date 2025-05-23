@@ -1344,8 +1344,8 @@ class Filesystem:
     def mount(self):
         return self._mount
 
-    def get_fstype(self) -> str:
-        return self.fstype
+    # def get_fstype(self) -> str:
+    #     return self.fstype
 
     def _available(self):
         # False if mounted or if fs does not require a mount, True otherwise.
@@ -1530,6 +1530,7 @@ class ActionRenderMode(enum.Enum):
 
 class FilesystemModel:
     target = None
+    fstype: str = None
 
     _partition_alignment_data = {
         "gpt": PartitionAlignmentData(
@@ -2439,9 +2440,8 @@ class FilesystemModel:
     def should_add_swapfile(self):
         mount = self._mount_for_path("/")
         if mount is not None:
-            if not can_use_swapfile("/", self._fs.fstype):
-                print(fstype)
-                print(self._fs.fstype)
+            # self is of type FilesystemModel which doesnt have a fstype
+            if not can_use_swapfile("/", self.fstype):
                 return False
         for swap in self._all(type="format", fstype="swap"):
             if swap.mount():
