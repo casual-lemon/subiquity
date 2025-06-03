@@ -65,7 +65,7 @@ target/
 installer/*.img
 installer/*.img_*
 logs/*
-venv
+venv*
 .pybuild
 
 # top level dependencies fetched from git, ignore top level only.
@@ -81,3 +81,8 @@ venv
 
 # ignore local vscode config
 .vscode
+
+# snap
+*.snap
+*.img
+
