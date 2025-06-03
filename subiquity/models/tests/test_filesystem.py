@@ -1284,6 +1284,43 @@ class TestAutoInstallConfig(unittest.TestCase):
         self.assertEqual(rendered_by_id[vol_id]["type"], "device")
         self.assertEqual(rendered_by_id[vol_id]["path"], "/dev/vda1")
 
+    def test_bind_mount_fstype_tmpfs(self):
+        model = make_model()
+        make_disk(model, path="/dev/vda")
+        fake_up_blockdata(model)
+        model.apply_autoinstall_config(
+            [
+                {
+                    "id": "tmpfs1",
+                    "type": "mount",
+                    "spec": "none",
+                    "path": "/tmp",
+                    "size": "4194304",
+                    "fstype": "tmpfs",
+                },
+            ]
+        )
+        self.assertEqual(model.render()["storage"]["config"][0]["fstype"], "tmpfs")
+
+    def test_bind_mount_fstype_zfs(self):
+        model = make_model()
+        make_disk(model, path="/dev/vda")
+        fake_up_blockdata(model)
+        model.apply_autoinstall_config(
+            [
+                {
+                    "id": "zfs1",
+                    "type": "mount",
+                    "spec": "none",
+                    "path": "/tmp",
+                    "size": "4194304",
+                    "fstype": "zfs",
+                },
+            ]
+        )
+        # assert zfs has no swap
+        self.assertEqual(model.render()["storage"]["config"][0]["fstype"], "zfs")
+
     def test_render_includes_all_partitions(self):
         model = make_model(Bootloader.NONE)
         disk1 = make_disk(model, preserve=True)
