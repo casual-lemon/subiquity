@@ -2441,7 +2441,6 @@ class FilesystemModel:
     def should_add_swapfile(self):
         mount = self._mount_for_path("/")
         if mount is not None:
-            # self is of type FilesystemModel which doesnt have a fstype
             if not can_use_swapfile("/", self.fstype):
                 return False
         for swap in self._all(type="format", fstype="swap"):
