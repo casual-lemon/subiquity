@@ -1354,7 +1354,7 @@ class Filesystem:
             if self.preserve:
                 return True
             else:
-                return FilesystemModel.is_mounted_filesystem(self.fstype)
+                return FilesystemModel.is_mounted_filesystem(self.volume.format(self))
         else:
             return False
 
@@ -1538,6 +1538,7 @@ class ActionRenderMode(enum.Enum):
 
 class FilesystemModel:
     target = None
+    fstype = None
 
     _partition_alignment_data = {
         "gpt": PartitionAlignmentData(
