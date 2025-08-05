@@ -1335,7 +1335,7 @@ class ArbitraryDevice(_Device):
 
 @fsobj("format")
 class Filesystem:
-    fstype: str
+    fstype: str = None
     volume: _Formattable = attributes.ref(backlink="_fs")
 
     label: Optional[str] = None
@@ -2455,7 +2455,7 @@ class FilesystemModel:
     def should_add_swapfile(self):
         mount = self._mount_for_path("/")
         if mount is not None:
-            if not can_use_swapfile("/", mount.fstype):
+            if not can_use_swapfile("/", mount.device.volume._fs.fstype):
                 return False
         for swap in self._all(type="format", fstype="swap"):
             if swap.mount():

@@ -1288,10 +1288,10 @@ class TestAutoInstallConfig(unittest.TestCase):
         model = make_model(Bootloader.NONE, storage_version=2)
         disk = make_disk(model, path="/tmp", preserve=True)
         fake_up_blockdata(model)
-        fs = model.add_filesystem(disk, fstype="tmpfs")
-        actions = model._render_actions(ActionRenderMode.FORMAT_MOUNT)
+        fs = model.add_filesystem(volume=disk, fstype="tmpfs", preserve=False)
+        actions = model._render_actions(ActionRenderMode.DEFAULT)
         rendered_by_id = {action["id"]: action for action in actions}
-        model.add_mount(fs, "/tmp")
+        mount = model.add_mount(fs=fs, path="/tmp")
         model.apply_autoinstall_config(
             [
                 {
@@ -1305,25 +1305,16 @@ class TestAutoInstallConfig(unittest.TestCase):
                 },
             ]
         )
-        print(model.render())
-        print(fs)
-        print("in render actions", actions)
-        print("ids", rendered_by_id)
-        self.assertEqual(model.render()["storage"]["config"][0]["fstype"], "tmpfs")
-
-        # TODO: add tset around add_swapfile
-        #     m = make_model()
-        # with mock.patch.object(m, "should_add_swapfile", return_value=False):
-        #     cfg = m.render()
-        #     self.assertEqual({"size": 0}, cfg["swap"])
+        self.assertEqual(rendered_by_id["format-0"]["fstype"], "tmpfs")
 
     def test_bind_mount_fstype_zfs(self):
-        model = make_model()
-        make_disk(model, path="/tmp", preserve=True)
+        model = make_model(Bootloader.NONE, storage_version=2)
+        disk = make_disk(model, path="/tmp", preserve=True)
         fake_up_blockdata(model)
-        disk = make_disk(model, preserve=True)
-        fs = model.add_filesystem(disk, fstype="zfs")
-        model.add_mount(fs, "/")
+        fs = model.add_filesystem(volume=disk, fstype="zfs", preserve=False)
+        actions = model._render_actions(ActionRenderMode.DEFAULT)
+        rendered_by_id = {action["id"]: action for action in actions}
+        mount = model.add_mount(fs=fs, path="/tmp")
         model.apply_autoinstall_config(
             [
                 {
@@ -1333,12 +1324,10 @@ class TestAutoInstallConfig(unittest.TestCase):
                     "path": "/tmp",
                     "size": "4194304",
                     "fstype": "zfs",
-                    "options": "mode=1777,nosuid,nodev",
                 },
             ]
         )
-        # assert zfs has no swap
-        self.assertEqual(model.render()["storage"]["config"][0]["fstype"], "zfs")
+        self.assertEqual(rendered_by_id["format-0"]["fstype"], "zfs")
 
     def test_render_includes_all_partitions(self):
         model = make_model(Bootloader.NONE)
