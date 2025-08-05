@@ -69,6 +69,7 @@ from subiquity.common.types import (
 )
 from subiquity.common.types.storage import (
     AddPartitionV2,
+    CalculateEntropyRequest,
     Disk,
     EntropyResponse,
     GuidedChoiceV2,
@@ -389,10 +390,7 @@ class API:
                     partition will be deleted as well."""
 
             class calculate_entropy:
-                def POST(
-                    passphrase: Optional[str] = None,
-                    pin: Optional[str] = None,
-                ) -> EntropyResponse:
+                def POST(data: Payload[CalculateEntropyRequest]) -> EntropyResponse:
                     """Calculate the entropy associated with the supplied
                     passphrase or pin.  Clients must use this endpoint to
                     confirm that the pin or passphrase is suitable prior to

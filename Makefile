@@ -9,6 +9,9 @@ PROBERT_REPO=https://github.com/canonical/probert
 DRYRUN?=--dry-run --bootloader uefi --machine-config examples/machines/simple.json \
 	--source-catalog examples/sources/install.yaml \
 	--postinst-hooks-dir examples/postinst.d/
+UNITTESTARGS?=
+COVERAGEARGS:=--cov=subiquity --cov=subiquitycore --cov=console_conf
+COVERAGEARGS+=--cov-report xml:.coverage/cobertura.xml
 export PYTHONPATH
 CWD := $(shell pwd)
 
@@ -66,7 +69,11 @@ flake8:
 unit: gitdeps
 	timeout 120 \
 	$(PYTHON) -m pytest --ignore curtin --ignore probert \
-		--ignore subiquity/tests/api
+		--ignore subiquity/tests/api \
+		$(UNITTESTARGS)
+
+coverage:
+	$(MAKE) unit UNITTESTARGS="$(COVERAGEARGS)"
 
 .PHONY: api
 api: gitdeps

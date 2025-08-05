@@ -18,7 +18,7 @@ import copy
 import subprocess
 import uuid
 from pathlib import Path
-from unittest import IsolatedAsyncioTestCase, mock
+from unittest import IsolatedAsyncioTestCase, TestCase, mock
 
 import attrs
 import jsonschema
@@ -32,6 +32,7 @@ from subiquity.common.filesystem.actions import DeviceAction
 from subiquity.common.types.storage import (
     AddPartitionV2,
     Bootloader,
+    CalculateEntropyRequest,
     EntropyResponse,
     Gap,
     GapUsable,
@@ -70,10 +71,12 @@ from subiquity.server.controllers.filesystem import (
     FilesystemController,
     StorageRecoverableError,
     VariationInfo,
+    validate_pin_pass,
 )
 from subiquity.server.dryrun import DRConfig
 from subiquity.server.snapd import api as snapdapi
 from subiquity.server.snapd import types as snapdtypes
+from subiquity.server.snapd.info import SnapdInfo
 from subiquity.server.snapd.system_getter import SystemGetter
 from subiquity.server.snapd.types import VolumesAuth, VolumesAuthMode
 from subiquitycore.snapd import AsyncSnapd, SnapdConnection, get_fake_connection
@@ -105,6 +108,48 @@ default_capabilities_disallowed_too_small = [
 ]
 
 
+class TestValidatePinPass(TestCase):
+    def test_valid_pin(self):
+        validate_pin_pass(
+            passphrase_allowed=False, pin_allowed=True, passphrase=None, pin="1234"
+        )
+
+    def test_invalid_pin(self):
+        with self.assertRaises(
+            StorageRecoverableError, msg="pin is a string of digits"
+        ):
+            validate_pin_pass(
+                passphrase_allowed=False, pin_allowed=True, passphrase=None, pin="abcd"
+            )
+
+    def test_valid_passphrase(self):
+        validate_pin_pass(
+            passphrase_allowed=True, pin_allowed=False, passphrase="abcd", pin=None
+        )
+
+    def test_unexpected_passphrase(self):
+        with self.assertRaises(
+            StorageRecoverableError, msg="unexpected passphrase supplied"
+        ):
+            validate_pin_pass(
+                passphrase_allowed=False, pin_allowed=False, passphrase="abcd", pin=None
+            )
+
+    def test_unexpected_pin(self):
+        with self.assertRaises(StorageRecoverableError, msg="unexpected pin supplied"):
+            validate_pin_pass(
+                passphrase_allowed=False, pin_allowed=False, passphrase=None, pin="1234"
+            )
+
+    def test_pin_and_pass_supplied(self):
+        with self.assertRaises(
+            StorageRecoverableError, msg="must supply at most one of pin and passphrase"
+        ):
+            validate_pin_pass(
+                passphrase_allowed=True, pin_allowed=True, passphrase="abcd", pin="1234"
+            )
+
+
 class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
     MOCK_PREFIX = "subiquity.server.controllers.filesystem."
 
@@ -116,6 +161,7 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
         self.app.prober.get_storage = mock.AsyncMock()
         self.app.block_log_dir = "/inexistent"
         self.app.note_file_for_apport = mock.Mock()
+        self.app.snapdinfo = mock.Mock(spec=SnapdInfo)
         self.fsc = FilesystemController(app=self.app)
         self.fsc._configured = True
 
@@ -497,13 +543,33 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
             partition=Partition(number=1, name="Foobar"),
         )
 
-        existing = make_partition(self.fsc.model, d, size=1000 << 20)
+        existing = make_partition(
+            self.fsc.model, d, size=1000 << 20, partition_name="MyPart"
+        )
         with mock.patch.object(self.fsc, "partition_disk_handler") as handler:
             with mock.patch.object(self.fsc, "get_partition", return_value=existing):
                 with self.assertRaisesRegex(ValueError, r"changing partition name"):
                     await self.fsc.v2_edit_partition_POST(data)
         self.assertTrue(self.fsc.locked_probe_data)
         handler.assert_not_called()
+
+    @parameterized.expand(((None,), ("Foobar",)))
+    async def test_v2_edit_partition_POST_preserve_pname(self, name):
+        self.fsc.locked_probe_data = False
+        self.fsc.model, d = make_model_and_disk()
+        data = ModifyPartitionV2(
+            disk_id=d.id,
+            partition=Partition(number=1, name=name),
+        )
+
+        existing = make_partition(
+            self.fsc.model, d, size=1000 << 20, partition_name="Foobar"
+        )
+        with mock.patch.object(self.fsc, "partition_disk_handler") as handler:
+            with mock.patch.object(self.fsc, "get_partition", return_value=existing):
+                await self.fsc.v2_edit_partition_POST(data)
+        self.assertTrue(self.fsc.locked_probe_data)
+        handler.assert_called_once()
 
     async def test_v2_edit_partition_POST_unsupported_ptable(self):
         self.fsc.locked_probe_data = False
@@ -623,6 +689,16 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
 
         with self.assertRaises(
             StorageRecoverableError, msg="not using core boot encrypted"
+        ):
+            await self.fsc.v2_core_boot_recovery_key_GET()
+
+    async def test_v2_core_boot_recovery_GET__not_yet_available(self):
+        self.fsc.model = make_model()
+        self.fsc.model.guided_configuration = mock.Mock(
+            capability=GuidedCapability.CORE_BOOT_ENCRYPTED
+        )
+        with self.assertRaises(
+            StorageRecoverableError, msg="recovery key is not yet available"
         ):
             await self.fsc.v2_core_boot_recovery_key_GET()
 
@@ -985,6 +1061,7 @@ class TestRunAutoinstallGuided(IsolatedAsyncioTestCase):
     def setUp(self):
         self.app = make_app()
         self.app.opts.bootloader = None
+        self.app.snapdinfo = mock.Mock(spec=SnapdInfo)
         self.fsc = FilesystemController(self.app)
         self.model = self.fsc.model = make_model()
 
@@ -1066,6 +1143,7 @@ class TestGuided(IsolatedAsyncioTestCase):
     async def _guided_setup(self, bootloader, ptable, storage_version=None):
         self.app = make_app()
         self.app.opts.bootloader = bootloader.value
+        self.app.snapdinfo = mock.Mock(spec=SnapdInfo)
         self.controller = FilesystemController(self.app)
         self.controller.supports_resilient_boot = True
         self.controller._examine_systems_task.start_sync()
@@ -1475,6 +1553,7 @@ class TestGuidedV2(IsolatedAsyncioTestCase):
     async def _setup(self, bootloader, ptable, fix_bios=True, **kw):
         self.app = make_app()
         self.app.opts.bootloader = bootloader.value
+        self.app.snapdinfo = mock.Mock(spec=SnapdInfo)
         self.fsc = FilesystemController(app=self.app)
         self.fsc.calculate_suggested_install_min = mock.Mock()
         self.fsc.calculate_suggested_install_min.return_value = 10 << 30
@@ -2276,6 +2355,7 @@ class TestCoreBootInstallMethods(IsolatedAsyncioTestCase):
             }
         )
         self.app.snapdapi = snapdapi.make_api_client(AsyncSnapd(get_fake_connection()))
+        self.app.snapdinfo = mock.Mock(spec=SnapdInfo)
         self.app.dr_cfg = DRConfig()
         self.app.dr_cfg.systems_dir_exists = True
         self.app.controllers.Source.get_handler.return_value = TrivialSourceHandler("")
@@ -2697,14 +2777,18 @@ class TestCalculateEntropy(IsolatedAsyncioTestCase):
         self.app = make_app()
         self.app.opts.bootloader = None
         self.fsc = FilesystemController(app=self.app)
+        self.fsc._info = mock.Mock()
+        self.fsc._info.needs_systems_mount = False
 
     async def test_both_pin_and_pass(self):
         with self.assertRaises(StorageRecoverableError):
-            await self.fsc.v2_calculate_entropy_POST(passphrase="asdf", pin="01234")
+            await self.fsc.v2_calculate_entropy_POST(
+                CalculateEntropyRequest(passphrase="asdf", pin="01234")
+            )
 
     async def test_neither_pin_and_pass(self):
         with self.assertRaises(StorageRecoverableError):
-            await self.fsc.v2_calculate_entropy_POST()
+            await self.fsc.v2_calculate_entropy_POST(CalculateEntropyRequest())
 
     @parameterized.expand(
         (
@@ -2715,15 +2799,79 @@ class TestCalculateEntropy(IsolatedAsyncioTestCase):
     )
     async def test_invalid_pin(self, pin):
         with self.assertRaises(StorageRecoverableError):
-            await self.fsc.v2_calculate_entropy_POST(pin=pin)
+            await self.fsc.v2_calculate_entropy_POST(CalculateEntropyRequest(pin=pin))
 
     @parameterized.expand(
         (
-            [{"pin": "01234"}],
-            [{"passphrase": "asdf"}],
+            (
+                "pin",
+                "012",
+                EntropyResponse(False, 3, 4, 5, failure_reasons=["low-entropy"]),
+                "invalid-pin",
+            ),
+            (
+                "passphrase",
+                "asdf",
+                EntropyResponse(False, 8, 8, 10, failure_reasons=["low-entropy"]),
+                "invalid-passphrase",
+            ),
         )
     )
-    async def test_stub_valid(self, kwargs):
-        expected = EntropyResponse(0.0, 0.0)
-        actual = await self.fsc.v2_calculate_entropy_POST(**kwargs)
-        self.assertEqual(expected, actual)
+    async def test_stub_invalid(self, type_, pin_or_pass, expected_entropy, kind):
+        label = self.fsc._info.label
+        self.app.snapd = AsyncSnapd(get_fake_connection())
+
+        with mock.patch(
+            "subiquity.server.controllers.filesystem.snapdapi.make_api_client",
+            return_value=self.app.snapdapi,
+        ):
+            with mock.patch.object(
+                self.app.snapdapi.v2.systems[label],
+                "POST",
+                new_callable=mock.AsyncMock,
+                return_value=snapdtypes.EntropyCheckResponse(
+                    kind=kind,
+                    message="did not pass quality checks",
+                    value=snapdtypes.InsufficientEntropyDetails(
+                        reasons=[snapdtypes.InsufficientEntropyReasons.LOW_ENTROPY],
+                        entropy_bits=expected_entropy.entropy_bits,
+                        min_entropy_bits=expected_entropy.min_entropy_bits,
+                        optimal_entropy_bits=expected_entropy.optimal_entropy_bits,
+                    ),
+                ),
+            ):
+                actual = await self.fsc.v2_calculate_entropy_POST(
+                    CalculateEntropyRequest(**{type_: pin_or_pass})
+                )
+
+        self.assertEqual(expected_entropy, actual)
+
+    @parameterized.expand(
+        (
+            ("pin", "01234", EntropyResponse(True, 5, 4, 8)),
+            ("passphrase", "asdfasdf", EntropyResponse(True, 8, 8, 16)),
+        )
+    )
+    async def test_stub_valid(self, type_, pin_or_pass, expected_entropy):
+        label = self.fsc._info.label
+        self.app.snapd = AsyncSnapd(get_fake_connection())
+
+        with mock.patch(
+            "subiquity.server.controllers.filesystem.snapdapi.make_api_client",
+            return_value=self.app.snapdapi,
+        ):
+            with mock.patch.object(
+                self.app.snapdapi.v2.systems[label],
+                "POST",
+                new_callable=mock.AsyncMock,
+                return_value=snapdtypes.EntropyCheckResponse(
+                    entropy_bits=expected_entropy.entropy_bits,
+                    min_entropy_bits=expected_entropy.min_entropy_bits,
+                    optimal_entropy_bits=expected_entropy.optimal_entropy_bits,
+                ),
+            ):
+                actual = await self.fsc.v2_calculate_entropy_POST(
+                    CalculateEntropyRequest(**{type_: pin_or_pass})
+                )
+
+        self.assertEqual(expected_entropy, actual)

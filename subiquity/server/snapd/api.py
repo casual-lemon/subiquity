@@ -85,12 +85,12 @@ class _FakeResponse:
         return self.data
 
 
-class _FakeError:
-    def __init__(self, data):
-        self.data = data
-
+class _FakeError(_FakeResponse):
     def raise_for_status(self):
         raise aiohttp.ClientError(self.data["result"]["message"])
+
+    async def json(self):
+        return self.data["result"]
 
 
 def make_api_client(async_snapd, log_responses=False, *, api_class=SnapdAPI):
@@ -101,11 +101,15 @@ def make_api_client(async_snapd, log_responses=False, *, api_class=SnapdAPI):
     # the fake implementation used in dry-run mode.
 
     @contextlib.asynccontextmanager
-    async def make_request(method, path, *, params, json):
+    async def make_request(method, path, *, params, json, raise_for_status):
         if method == "GET":
-            content = await async_snapd.get(path[1:], **params)
+            content = await async_snapd.get(
+                path[1:], raise_for_status=raise_for_status, **params
+            )
         else:
-            content = await async_snapd.post(path[1:], json, **params)
+            content = await async_snapd.post(
+                path[1:], json, raise_for_status=raise_for_status, **params
+            )
         if log_responses:
             log_json_response(content, path.replace("/", "_"))
         response = snapd_serializer.deserialize(Response, content)
@@ -114,7 +118,8 @@ def make_api_client(async_snapd, log_responses=False, *, api_class=SnapdAPI):
         elif response.type == ResponseType.ASYNC:
             content = content["change"]
         elif response.type == ResponseType.ERROR:
-            yield _FakeError()
+            yield _FakeError(content)
+            return
         yield _FakeResponse(content)
 
     client = make_client(api_class, make_request, serializer=snapd_serializer)
