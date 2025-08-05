@@ -1291,7 +1291,7 @@ class TestAutoInstallConfig(unittest.TestCase):
         fs = model.add_filesystem(volume=disk, fstype="tmpfs", preserve=False)
         actions = model._render_actions(ActionRenderMode.DEFAULT)
         rendered_by_id = {action["id"]: action for action in actions}
-        mount = model.add_mount(fs=fs, path="/tmp")
+        model.add_mount(fs=fs, path="/tmp")
         model.apply_autoinstall_config(
             [
                 {
