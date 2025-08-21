@@ -33,6 +33,7 @@ from subiquity.common.types.storage import (
     AddPartitionV2,
     Bootloader,
     CalculateEntropyRequest,
+    CoreBootEncryptionFeatures,
     EntropyResponse,
     Gap,
     GapUsable,
@@ -69,7 +70,9 @@ from subiquity.server.autoinstall import AutoinstallError
 from subiquity.server.controllers.filesystem import (
     DRY_RUN_RESET_SIZE,
     FilesystemController,
-    StorageRecoverableError,
+    StorageConstraintViolationError,
+    StorageInvalidUsageError,
+    StorageNotFoundError,
     VariationInfo,
     validate_pin_pass,
 )
@@ -116,7 +119,7 @@ class TestValidatePinPass(TestCase):
 
     def test_invalid_pin(self):
         with self.assertRaises(
-            StorageRecoverableError, msg="pin is a string of digits"
+            StorageInvalidUsageError, msg="pin is a string of digits"
         ):
             validate_pin_pass(
                 passphrase_allowed=False, pin_allowed=True, passphrase=None, pin="abcd"
@@ -129,21 +132,22 @@ class TestValidatePinPass(TestCase):
 
     def test_unexpected_passphrase(self):
         with self.assertRaises(
-            StorageRecoverableError, msg="unexpected passphrase supplied"
+            StorageInvalidUsageError, msg="unexpected passphrase supplied"
         ):
             validate_pin_pass(
                 passphrase_allowed=False, pin_allowed=False, passphrase="abcd", pin=None
             )
 
     def test_unexpected_pin(self):
-        with self.assertRaises(StorageRecoverableError, msg="unexpected pin supplied"):
+        with self.assertRaises(StorageInvalidUsageError, msg="unexpected pin supplied"):
             validate_pin_pass(
                 passphrase_allowed=False, pin_allowed=False, passphrase=None, pin="1234"
             )
 
     def test_pin_and_pass_supplied(self):
         with self.assertRaises(
-            StorageRecoverableError, msg="must supply at most one of pin and passphrase"
+            StorageInvalidUsageError,
+            msg="must supply at most one of pin and passphrase",
         ):
             validate_pin_pass(
                 passphrase_allowed=True, pin_allowed=True, passphrase="abcd", pin="1234"
@@ -338,7 +342,7 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
         self.fsc.locked_probe_data = False
         with mock.patch.object(self.fsc, "add_boot_disk") as add_boot_disk:
             with self.assertRaises(
-                StorageRecoverableError, msg="device already has bootloader"
+                StorageConstraintViolationError, msg="device already has bootloader"
             ):
                 await self.fsc.v2_add_boot_partition_POST("dev-sda")
         self.assertTrue(self.fsc.locked_probe_data)
@@ -350,7 +354,7 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
         self.fsc.locked_probe_data = False
         with mock.patch.object(self.fsc, "add_boot_disk") as add_boot_disk:
             with self.assertRaises(
-                StorageRecoverableError, msg="disk does not support boot"
+                StorageConstraintViolationError, msg="disk does not support boot"
             ):
                 await self.fsc.v2_add_boot_partition_POST("dev-sda")
         self.assertTrue(self.fsc.locked_probe_data)
@@ -362,7 +366,7 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
 
         with mock.patch.object(self.fsc, "add_boot_disk") as add_boot_disk:
             with self.assertRaisesRegex(
-                StorageRecoverableError, "unsupported partition table"
+                StorageInvalidUsageError, "unsupported partition table"
             ):
                 await self.fsc.v2_add_boot_partition_POST(d.id)
         self.assertTrue(self.fsc.locked_probe_data)
@@ -397,7 +401,7 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
         )
         with mock.patch.object(self.fsc, "create_partition") as create_part:
             with self.assertRaisesRegex(
-                ValueError, r"does\ not\ support\ changing\ boot"
+                StorageInvalidUsageError, r"does\ not\ support\ changing\ boot"
             ):
                 await self.fsc.v2_add_partition_POST(data)
         self.assertTrue(self.fsc.locked_probe_data)
@@ -419,7 +423,7 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
             ),
         )
         with mock.patch.object(self.fsc, "create_partition") as create_part:
-            with self.assertRaisesRegex(ValueError, r"too\ large"):
+            with self.assertRaisesRegex(StorageConstraintViolationError, r"too\ large"):
                 await self.fsc.v2_add_partition_POST(data)
         self.assertTrue(self.fsc.locked_probe_data)
         create_part.assert_not_called()
@@ -441,7 +445,7 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
         )
         with mock.patch.object(self.fsc, "create_partition") as create_part:
             with self.assertRaisesRegex(
-                StorageRecoverableError, r"partition name is not implemented"
+                StorageInvalidUsageError, r"partition name is not implemented"
             ):
                 await self.fsc.v2_add_partition_POST(data)
         self.assertTrue(self.fsc.locked_probe_data)
@@ -465,7 +469,7 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
         )
         with mock.patch.object(self.fsc, "create_partition") as create_part:
             with self.assertRaisesRegex(
-                StorageRecoverableError, r"unsupported partition table"
+                StorageInvalidUsageError, r"unsupported partition table"
             ):
                 await self.fsc.v2_add_partition_POST(data)
         self.assertTrue(self.fsc.locked_probe_data)
@@ -502,7 +506,7 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
         with mock.patch.object(self.fsc, "delete_partition") as del_part:
             with mock.patch.object(self.fsc, "get_partition"):
                 with self.assertRaisesRegex(
-                    StorageRecoverableError, r"unsupported partition table"
+                    StorageInvalidUsageError, r"unsupported partition table"
                 ):
                     await self.fsc.v2_delete_partition_POST(data)
         self.assertTrue(self.fsc.locked_probe_data)
@@ -530,7 +534,9 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
         existing = make_partition(self.fsc.model, d, size=1000 << 20)
         with mock.patch.object(self.fsc, "partition_disk_handler") as handler:
             with mock.patch.object(self.fsc, "get_partition", return_value=existing):
-                with self.assertRaisesRegex(ValueError, r"changing\ boot"):
+                with self.assertRaisesRegex(
+                    StorageInvalidUsageError, r"changing\ boot"
+                ):
                     await self.fsc.v2_edit_partition_POST(data)
         self.assertTrue(self.fsc.locked_probe_data)
         handler.assert_not_called()
@@ -548,7 +554,9 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
         )
         with mock.patch.object(self.fsc, "partition_disk_handler") as handler:
             with mock.patch.object(self.fsc, "get_partition", return_value=existing):
-                with self.assertRaisesRegex(ValueError, r"changing partition name"):
+                with self.assertRaisesRegex(
+                    StorageInvalidUsageError, r"changing partition name"
+                ):
                     await self.fsc.v2_edit_partition_POST(data)
         self.assertTrue(self.fsc.locked_probe_data)
         handler.assert_not_called()
@@ -583,7 +591,7 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
         with mock.patch.object(self.fsc, "partition_disk_handler") as handler:
             with mock.patch.object(self.fsc, "get_partition", return_value=existing):
                 with self.assertRaisesRegex(
-                    StorageRecoverableError, r"unsupported partition table"
+                    StorageInvalidUsageError, r"unsupported partition table"
                 ):
                     await self.fsc.v2_edit_partition_POST(data)
         self.assertTrue(self.fsc.locked_probe_data)
@@ -616,7 +624,7 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
         self.fsc.model = make_model()
         with mock.patch.object(self.fsc, "delete_volgroup") as del_volgroup:
             with self.assertRaisesRegex(
-                StorageRecoverableError, r"could not find existing VG"
+                StorageNotFoundError, r"could not find existing VG"
             ):
                 await self.fsc.v2_volume_group_DELETE(id="inexistent")
         self.assertTrue(self.fsc.locked_probe_data)
@@ -635,7 +643,7 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
         self.fsc.model = make_model()
         with mock.patch.object(self.fsc, "delete_logical_volume") as del_lv:
             with self.assertRaisesRegex(
-                StorageRecoverableError, r"could not find existing LV"
+                StorageNotFoundError, r"could not find existing LV"
             ):
                 await self.fsc.v2_logical_volume_DELETE(id="inexistent")
         self.assertTrue(self.fsc.locked_probe_data)
@@ -654,7 +662,7 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
         self.fsc.model = make_model()
         with mock.patch.object(self.fsc, "delete_raid") as del_raid:
             with self.assertRaisesRegex(
-                StorageRecoverableError, r"could not find existing RAID"
+                StorageNotFoundError, r"could not find existing RAID"
             ):
                 await self.fsc.v2_raid_DELETE(id="inexistent")
         self.assertTrue(self.fsc.locked_probe_data)
@@ -672,14 +680,14 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
         self.fsc.model = make_model()
         self.fsc._configured = False
         with self.assertRaises(
-            StorageRecoverableError, msg="storage model is not yet configured"
+            StorageInvalidUsageError, msg="storage model is not yet configured"
         ):
             await self.fsc.v2_core_boot_recovery_key_GET()
 
     async def test_v2_core_boot_recovery_GET__not_core_boot(self):
         self.fsc.model = make_model()
         with self.assertRaises(
-            StorageRecoverableError, msg="not using core boot encrypted"
+            StorageInvalidUsageError, msg="not using core boot encrypted"
         ):
             await self.fsc.v2_core_boot_recovery_key_GET()
 
@@ -688,7 +696,7 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
         )
 
         with self.assertRaises(
-            StorageRecoverableError, msg="not using core boot encrypted"
+            StorageInvalidUsageError, msg="not using core boot encrypted"
         ):
             await self.fsc.v2_core_boot_recovery_key_GET()
 
@@ -698,9 +706,98 @@ class TestSubiquityControllerFilesystem(IsolatedAsyncioTestCase):
             capability=GuidedCapability.CORE_BOOT_ENCRYPTED
         )
         with self.assertRaises(
-            StorageRecoverableError, msg="recovery key is not yet available"
+            StorageInvalidUsageError, msg="recovery key is not yet available"
         ):
             await self.fsc.v2_core_boot_recovery_key_GET()
+
+    @parameterized.expand(
+        (
+            (
+                [
+                    snapdtypes.EncryptionFeature.PIN_AUTH,
+                    snapdtypes.EncryptionFeature.PASSPHRASE_AUTH,
+                ],
+                [
+                    CoreBootEncryptionFeatures.PIN_AUTH,
+                    CoreBootEncryptionFeatures.PASSPHRASE_AUTH,
+                ],
+            ),
+            (
+                [snapdtypes.EncryptionFeature.PIN_AUTH],
+                [CoreBootEncryptionFeatures.PIN_AUTH],
+            ),
+            (
+                [snapdtypes.EncryptionFeature.PASSPHRASE_AUTH],
+                [CoreBootEncryptionFeatures.PASSPHRASE_AUTH],
+            ),
+        )
+    )
+    async def test_v2_core_boot_encryption_features_GET(
+        self,
+        snapd_features: list[snapdtypes.EncryptionFeature],
+        expected: list[CoreBootEncryptionFeatures],
+    ):
+        self.fsc.model = make_model()
+
+        self.fsc._variation_info = {
+            "mimimal-enhanced-secureboot": VariationInfo(
+                name="minimal-enhanced-secureboot",
+                label="enhanced-secureboot-desktop",
+                system=snapdtypes.SystemDetails(
+                    model=snapdtypes.Model(architecture="amd64", snaps=[]),
+                    label="enhanced-secureboot-desktop",
+                    storage_encryption=snapdtypes.StorageEncryption(
+                        support=snapdtypes.StorageEncryptionSupport.AVAILABLE,
+                        storage_safety=snapdtypes.StorageSafety.PREFER_ENCRYPTED,
+                        features=snapd_features,
+                    ),
+                ),
+            ),
+        }
+
+        self.assertEqual(
+            expected, await self.fsc.v2_core_boot_encryption_features_GET()
+        )
+
+    async def test_v2_core_boot_encryption_features_GET__snapd_2_67(self):
+        self.fsc.model = make_model()
+
+        self.fsc._variation_info = {
+            "mimimal-enhanced-secureboot": VariationInfo(
+                name="minimal-enhanced-secureboot",
+                label="enhanced-secureboot-desktop",
+                system=snapdtypes.SystemDetails(
+                    model=snapdtypes.Model(architecture="amd64", snaps=[]),
+                    label="enhanced-secureboot-desktop",
+                    storage_encryption=snapdtypes.StorageEncryption(
+                        support=snapdtypes.StorageEncryptionSupport.AVAILABLE,
+                        storage_safety=snapdtypes.StorageSafety.PREFER_ENCRYPTED,
+                        features=None,
+                    ),
+                ),
+            ),
+        }
+
+        self.assertEqual([], await self.fsc.v2_core_boot_encryption_features_GET())
+
+    async def test_v2_core_boot_encryption_features_GET__no_suitable_variation(self):
+        self.fsc.model = make_model()
+
+        self.fsc._variation_info = {}
+
+        with self.assertRaises(
+            StorageInvalidUsageError, msg="no suitable variation for core boot"
+        ):
+            await self.fsc.v2_core_boot_encryption_features_GET()
+
+        self.fsc._variation_info = {
+            "minimal": VariationInfo(name="minimal", label=None, system=None),
+        }
+
+        with self.assertRaises(
+            StorageInvalidUsageError, msg="no suitable variation for core boot"
+        ):
+            await self.fsc.v2_core_boot_encryption_features_GET()
 
     @parameterized.expand(((True,), (False,)))
     async def test__pre_shutdown_install_started(self, zfsutils_linux_installed: bool):
@@ -2743,7 +2840,7 @@ class TestGuidedChoiceValidation(IsolatedAsyncioTestCase):
         choice = GuidedChoiceV2(
             target=reformat, capability=tpmfde, pin="01234", password="asdf"
         )
-        with self.assertRaises(StorageRecoverableError):
+        with self.assertRaises(StorageInvalidUsageError):
             choice.validate()
 
     @parameterized.expand(
@@ -2759,7 +2856,7 @@ class TestGuidedChoiceValidation(IsolatedAsyncioTestCase):
             if ok:
                 return contextlib.nullcontext()
             else:
-                return self.assertRaises(StorageRecoverableError)
+                return self.assertRaises(StorageInvalidUsageError)
 
         reformat = GuidedStorageTargetReformat
         choice = GuidedChoiceV2(target=reformat, capability=capability)
@@ -2781,13 +2878,13 @@ class TestCalculateEntropy(IsolatedAsyncioTestCase):
         self.fsc._info.needs_systems_mount = False
 
     async def test_both_pin_and_pass(self):
-        with self.assertRaises(StorageRecoverableError):
+        with self.assertRaises(StorageInvalidUsageError):
             await self.fsc.v2_calculate_entropy_POST(
                 CalculateEntropyRequest(passphrase="asdf", pin="01234")
             )
 
     async def test_neither_pin_and_pass(self):
-        with self.assertRaises(StorageRecoverableError):
+        with self.assertRaises(StorageInvalidUsageError):
             await self.fsc.v2_calculate_entropy_POST(CalculateEntropyRequest())
 
     @parameterized.expand(
@@ -2798,7 +2895,7 @@ class TestCalculateEntropy(IsolatedAsyncioTestCase):
         )
     )
     async def test_invalid_pin(self, pin):
-        with self.assertRaises(StorageRecoverableError):
+        with self.assertRaises(StorageInvalidUsageError):
             await self.fsc.v2_calculate_entropy_POST(CalculateEntropyRequest(pin=pin))
 
     @parameterized.expand(
